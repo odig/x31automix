@@ -68,6 +68,8 @@ typedef struct
     int releaseCount;
     int automatic;
     float signalLevel;
+    float restoreSignalLevel;
+    float gain;
 } SIGNAL_STATE_TYPE;
 
 static int channelState[MAX_CHANNELS];
@@ -102,11 +104,15 @@ void dumpBuffer(char *buffer, size_t bufferLen)
 
     while (dataIndex<bufferLen)
     {
-        printf("\t\t");
-        for (dataIndex = totalIndex; dataIndex<totalIndex+16 && dataIndex < bufferLen; dataIndex++) 
+        if(totalIndex==0)
         {
-            printf("----");
+            printf("\t\t");
+            for (dataIndex = totalIndex; dataIndex<totalIndex+16 && dataIndex < bufferLen; dataIndex++) 
+            {
+                printf("----");
+            }
         }
+
         printf("\n\t\t");
         for (dataIndex = totalIndex; dataIndex<totalIndex+16 && dataIndex < bufferLen; dataIndex++) 
         {
@@ -126,6 +132,7 @@ void dumpBuffer(char *buffer, size_t bufferLen)
 
         totalIndex+=16;
     }    
+    printf("\n");
 }
 
 #if OS_IS_LINUX == 1 || OS_IS_MACOSX == 1 || OS_IS_CYGWIN == 1
@@ -616,16 +623,10 @@ size_t encodeOsc(OSCSTRUCT *osc, uint8_t *buffer, size_t bufferLen)
     memset(buffer,0,bufferLen);
 
     addressLen=strlen(osc->address);
+    addressLen++;
     if(addressLen%4>0)
     {
         addressLen+=4;
-    }
-    else
-    {
-        if (osc->sCount+osc->iCount+osc->fCount>0)
-        {
-            addressLen+=4;
-        }        
     }
     addressLen=(addressLen/4)*4;
 
@@ -726,6 +727,96 @@ size_t encodeOsc(OSCSTRUCT *osc, uint8_t *buffer, size_t bufferLen)
     return 0;
 }
 
+void sendCommand(const char *oscAddress)
+{
+    uint8_t encodeBuffer[2048];
+    OSCSTRUCT oscSend;
+    size_t sendLen;
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = inet_addr(remoteIP);
+    address.sin_port = htons(remoteport);
+
+    memset(&oscSend,0,sizeof(OSCSTRUCT));
+    strcpy(oscSend.address,oscAddress);
+
+    sendLen=encodeOsc(&oscSend,encodeBuffer,sizeof(encodeBuffer));
+    if (sendLen>0)
+    {
+        networkSend(udpSocket, &address, encodeBuffer, sendLen);
+    }
+}
+
+void sendIntCommand(const char *oscAddress,uint32_t iPar)
+{
+    uint8_t encodeBuffer[2048];
+    OSCSTRUCT oscSend;
+    size_t sendLen;
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = inet_addr(remoteIP);
+    address.sin_port = htons(remoteport);
+
+    memset(&oscSend,0,sizeof(OSCSTRUCT));
+    strcpy(oscSend.address,oscAddress);
+
+    oscSend.iCount++;
+    oscSend.iPar[0]=iPar;
+
+    sendLen=encodeOsc(&oscSend,encodeBuffer,sizeof(encodeBuffer));
+    if (sendLen>0)
+    {
+        networkSend(udpSocket, &address, encodeBuffer, sendLen);
+    }
+}
+
+void sendFloatCommand(const char *oscAddress,float fPar)
+{
+    uint8_t encodeBuffer[2048];
+    OSCSTRUCT oscSend;
+    size_t sendLen;
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = inet_addr(remoteIP);
+    address.sin_port = htons(remoteport);
+
+    memset(&oscSend,0,sizeof(OSCSTRUCT));
+    strcpy(oscSend.address,oscAddress);
+
+    oscSend.fCount++;
+    oscSend.fPar[0]=fPar;
+
+    sendLen=encodeOsc(&oscSend,encodeBuffer,sizeof(encodeBuffer));
+    if (sendLen>0)
+    {
+        networkSend(udpSocket, &address, encodeBuffer, sendLen);
+    }
+}
+
+void sendStringCommand(const char *oscAddress, const char *sPar)
+{
+    uint8_t encodeBuffer[2048];
+    OSCSTRUCT oscSend;
+    size_t sendLen;
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = inet_addr(remoteIP);
+    address.sin_port = htons(remoteport);
+
+    memset(&oscSend,0,sizeof(OSCSTRUCT));
+    strcpy(oscSend.address,oscAddress);
+
+    oscSend.sCount++;
+    strncpy(oscSend.sPar[0],sPar,sizeof(oscSend.sPar[0]));
+
+    sendLen=encodeOsc(&oscSend,encodeBuffer,sizeof(encodeBuffer));
+    if (sendLen>0)
+    {
+        networkSend(udpSocket, &address, encodeBuffer, sendLen);
+    }
+}
+
+
 
 void analyzeFader(int channel,float f)
 {
@@ -733,6 +824,10 @@ void analyzeFader(int channel,float f)
 
     val = f * 0x3fff;
     //printf("[%02d] Fader %f (%4x)\n",channel, f, val);
+    if(f>0.1)
+    {
+        signalState[channel].restoreSignalLevel = f;
+    }
 }
 
 void analyzePanning(int channel,float f)
@@ -742,7 +837,6 @@ void analyzePanning(int channel,float f)
     val = f * 0x3fff;
     //printf("[%02d] Panning %f (%4x)\n",channel, f, val);
 }
-
 
 void analyzeChannelState(int channel, int state)
 {
@@ -765,17 +859,11 @@ void analyzeSelectState(int channel, int state)
 void analyzeMeter1(OSCSTRUCT *osc)
 {
     int i;
-    uint8_t encodeBuffer[2048];
-    OSCSTRUCT oscSend;
-    size_t sendLen;
-
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = inet_addr(remoteIP);
-    address.sin_port = htons(remoteport);
+    char buffer[256];
 
     for(i=0;i<32;i++)
     {
-        if (signalState[i].automatic==1)
+        if (signalState[i].automatic&1)
         {
             if(osc->fPar[i]>attackNoiseLevelDefault && ++(signalState[i].attackCount)>attackCountDefault)
             {
@@ -783,21 +871,8 @@ void analyzeMeter1(OSCSTRUCT *osc)
                 signalState[i].signalLevel=osc->fPar[i];
                 if (signalState[i].releaseCount<=0)
                 {
-                    memset(&oscSend,0,sizeof(OSCSTRUCT));
-                    sprintf(oscSend.address,"/ch/%02d/mix/fader",i+1);
-
-                    oscSend.fCount++;
-                    oscSend.fPar[0]=.5;
-
-                    sendLen=encodeOsc(&oscSend,encodeBuffer,sizeof(encodeBuffer));
-                    if (sendLen>0)
-                    {
-                        if(debug)
-                        {
-                            dumpBuffer((char *) encodeBuffer, sendLen);
-                        }
-                        networkSend(udpSocket, &address, encodeBuffer, sendLen);
-                    }
+                    sprintf(buffer,"/ch/%02d/mix/fader",i+1);
+                    sendFloatCommand(buffer,signalState[i].restoreSignalLevel>0?signalState[i].restoreSignalLevel:.5);
                 }
                 signalState[i].releaseCount=releaseCountDefault;
             }
@@ -807,26 +882,32 @@ void analyzeMeter1(OSCSTRUCT *osc)
                 signalState[i].releaseCount--;
                 if (signalState[i].releaseCount<=0)
                 {
-                    memset(&oscSend,0,sizeof(OSCSTRUCT));
-                    sprintf(oscSend.address,"/ch/%02d/mix/fader",i+1);
-
-                    oscSend.fCount++;
-                    oscSend.fPar[0]=.0;
-
-                    sendLen=encodeOsc(&oscSend,encodeBuffer,sizeof(encodeBuffer));
-                    if (sendLen>0)
-                    {
-                        if(debug)
-                        {
-                            dumpBuffer((char *) encodeBuffer, sendLen);
-                        }
-                        networkSend(udpSocket, &address, encodeBuffer, sendLen);
-                        signalState[i].attackCount=0;
-                    }
+                    sprintf(buffer,"/ch/%02d/mix/fader",i+1);
+                    sendFloatCommand(buffer,0.0);
+                    signalState[i].attackCount=0;
+                    signalState[i].signalLevel=osc->fPar[i];
                 }
             }
         }
+        if (signalState[i].automatic&2)
+        {
+            if(osc->fPar[i]>1.0)
+            {
+                sprintf(buffer,"/headamp/%03d/gain",i);
+                signalState[i].gain -= .05;           
+                sendFloatCommand(buffer,signalState[i].gain);
+            }
+        }
     }
+}
+
+void analyzeHeadamp(int channel,float f)
+{
+    uint16_t val;
+
+    val = f * 0x3fff;
+    //printf("[%02d] Gain %f (%4x)\n",channel, f, val);
+    signalState[channel].gain = f;
 }
 
 void mapOSC(OSCSTRUCT *osc)
@@ -1014,94 +1095,127 @@ void mapOSC(OSCSTRUCT *osc)
 
 
     //pan
-    if(!strcmp("/ch/01/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning( 0,osc->fPar[0]); return;}
-    if(!strcmp("/ch/02/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning( 1,osc->fPar[0]); return;}
-    if(!strcmp("/ch/03/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning( 2,osc->fPar[0]); return;}
-    if(!strcmp("/ch/04/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning( 3,osc->fPar[0]); return;}
-    if(!strcmp("/ch/05/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning( 4,osc->fPar[0]); return;}
-    if(!strcmp("/ch/06/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning( 5,osc->fPar[0]); return;}
-    if(!strcmp("/ch/07/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning( 6,osc->fPar[0]); return;}
-    if(!strcmp("/ch/08/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning( 7,osc->fPar[0]); return;}
-    if(!strcmp("/ch/09/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning( 8,osc->fPar[0]); return;}
-    if(!strcmp("/ch/10/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning( 9,osc->fPar[0]); return;}
-    if(!strcmp("/ch/11/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(10,osc->fPar[0]); return;}
-    if(!strcmp("/ch/12/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(11,osc->fPar[0]); return;}
-    if(!strcmp("/ch/13/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(12,osc->fPar[0]); return;}
-    if(!strcmp("/ch/14/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(13,osc->fPar[0]); return;}
-    if(!strcmp("/ch/15/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(14,osc->fPar[0]); return;}
-    if(!strcmp("/ch/16/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(15,osc->fPar[0]); return;}
-    if(!strcmp("/ch/17/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(16,osc->fPar[0]); return;}
-    if(!strcmp("/ch/18/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(17,osc->fPar[0]); return;}
-    if(!strcmp("/ch/19/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(18,osc->fPar[0]); return;}
-    if(!strcmp("/ch/20/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(19,osc->fPar[0]); return;}
-    if(!strcmp("/ch/21/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(20,osc->fPar[0]); return;}
-    if(!strcmp("/ch/22/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(21,osc->fPar[0]); return;}
-    if(!strcmp("/ch/23/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(22,osc->fPar[0]); return;}
-    if(!strcmp("/ch/24/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(23,osc->fPar[0]); return;}
-    if(!strcmp("/ch/25/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(24,osc->fPar[0]); return;}
-    if(!strcmp("/ch/26/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(25,osc->fPar[0]); return;}
-    if(!strcmp("/ch/27/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(26,osc->fPar[0]); return;}
-    if(!strcmp("/ch/28/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(27,osc->fPar[0]); return;}
-    if(!strcmp("/ch/29/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(28,osc->fPar[0]); return;}
-    if(!strcmp("/ch/30/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(29,osc->fPar[0]); return;}
-    if(!strcmp("/ch/31/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(30,osc->fPar[0]); return;}
-    if(!strcmp("/ch/32/mix/pan",osc->address) && osc->iCount>0)       {analyzePanning(31,osc->fPar[0]); return;}
+    if(!strcmp("/ch/01/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning( 0,osc->fPar[0]); return;}
+    if(!strcmp("/ch/02/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning( 1,osc->fPar[0]); return;}
+    if(!strcmp("/ch/03/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning( 2,osc->fPar[0]); return;}
+    if(!strcmp("/ch/04/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning( 3,osc->fPar[0]); return;}
+    if(!strcmp("/ch/05/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning( 4,osc->fPar[0]); return;}
+    if(!strcmp("/ch/06/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning( 5,osc->fPar[0]); return;}
+    if(!strcmp("/ch/07/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning( 6,osc->fPar[0]); return;}
+    if(!strcmp("/ch/08/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning( 7,osc->fPar[0]); return;}
+    if(!strcmp("/ch/09/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning( 8,osc->fPar[0]); return;}
+    if(!strcmp("/ch/10/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning( 9,osc->fPar[0]); return;}
+    if(!strcmp("/ch/11/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(10,osc->fPar[0]); return;}
+    if(!strcmp("/ch/12/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(11,osc->fPar[0]); return;}
+    if(!strcmp("/ch/13/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(12,osc->fPar[0]); return;}
+    if(!strcmp("/ch/14/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(13,osc->fPar[0]); return;}
+    if(!strcmp("/ch/15/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(14,osc->fPar[0]); return;}
+    if(!strcmp("/ch/16/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(15,osc->fPar[0]); return;}
+    if(!strcmp("/ch/17/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(16,osc->fPar[0]); return;}
+    if(!strcmp("/ch/18/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(17,osc->fPar[0]); return;}
+    if(!strcmp("/ch/19/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(18,osc->fPar[0]); return;}
+    if(!strcmp("/ch/20/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(19,osc->fPar[0]); return;}
+    if(!strcmp("/ch/21/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(20,osc->fPar[0]); return;}
+    if(!strcmp("/ch/22/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(21,osc->fPar[0]); return;}
+    if(!strcmp("/ch/23/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(22,osc->fPar[0]); return;}
+    if(!strcmp("/ch/24/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(23,osc->fPar[0]); return;}
+    if(!strcmp("/ch/25/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(24,osc->fPar[0]); return;}
+    if(!strcmp("/ch/26/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(25,osc->fPar[0]); return;}
+    if(!strcmp("/ch/27/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(26,osc->fPar[0]); return;}
+    if(!strcmp("/ch/28/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(27,osc->fPar[0]); return;}
+    if(!strcmp("/ch/29/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(28,osc->fPar[0]); return;}
+    if(!strcmp("/ch/30/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(29,osc->fPar[0]); return;}
+    if(!strcmp("/ch/31/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(30,osc->fPar[0]); return;}
+    if(!strcmp("/ch/32/mix/pan",osc->address) && osc->fCount>0)       {analyzePanning(31,osc->fPar[0]); return;}
 
-    if(!strcmp("/auxin/01/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(32,osc->fPar[0]); return;}
-    if(!strcmp("/auxin/02/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(33,osc->fPar[0]); return;}
-    if(!strcmp("/auxin/03/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(34,osc->fPar[0]); return;}
-    if(!strcmp("/auxin/04/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(35,osc->fPar[0]); return;}
-    if(!strcmp("/auxin/05/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(36,osc->fPar[0]); return;}
-    if(!strcmp("/auxin/06/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(37,osc->fPar[0]); return;}
-    if(!strcmp("/auxin/07/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(38,osc->fPar[0]); return;}
-    if(!strcmp("/auxin/08/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(39,osc->fPar[0]); return;}
+    if(!strcmp("/auxin/01/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(32,osc->fPar[0]); return;}
+    if(!strcmp("/auxin/02/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(33,osc->fPar[0]); return;}
+    if(!strcmp("/auxin/03/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(34,osc->fPar[0]); return;}
+    if(!strcmp("/auxin/04/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(35,osc->fPar[0]); return;}
+    if(!strcmp("/auxin/05/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(36,osc->fPar[0]); return;}
+    if(!strcmp("/auxin/06/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(37,osc->fPar[0]); return;}
+    if(!strcmp("/auxin/07/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(38,osc->fPar[0]); return;}
+    if(!strcmp("/auxin/08/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(39,osc->fPar[0]); return;}
 
-    if(!strcmp("/fxrtn/01/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(40,osc->fPar[0]); return;}
-    if(!strcmp("/fxrtn/02/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(41,osc->fPar[0]); return;}
-    if(!strcmp("/fxrtn/03/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(42,osc->fPar[0]); return;}
-    if(!strcmp("/fxrtn/04/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(43,osc->fPar[0]); return;}
-    if(!strcmp("/fxrtn/05/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(44,osc->fPar[0]); return;}
-    if(!strcmp("/fxrtn/06/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(45,osc->fPar[0]); return;}
-    if(!strcmp("/fxrtn/07/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(46,osc->fPar[0]); return;}
-    if(!strcmp("/fxrtn/08/mix/pan",osc->address) && osc->iCount>0)    {analyzePanning(47,osc->fPar[0]); return;}
+    if(!strcmp("/fxrtn/01/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(40,osc->fPar[0]); return;}
+    if(!strcmp("/fxrtn/02/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(41,osc->fPar[0]); return;}
+    if(!strcmp("/fxrtn/03/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(42,osc->fPar[0]); return;}
+    if(!strcmp("/fxrtn/04/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(43,osc->fPar[0]); return;}
+    if(!strcmp("/fxrtn/05/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(44,osc->fPar[0]); return;}
+    if(!strcmp("/fxrtn/06/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(45,osc->fPar[0]); return;}
+    if(!strcmp("/fxrtn/07/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(46,osc->fPar[0]); return;}
+    if(!strcmp("/fxrtn/08/mix/pan",osc->address) && osc->fCount>0)    {analyzePanning(47,osc->fPar[0]); return;}
 
-    if(!strcmp("/dca/1/pan",osc->address) && osc->iCount>0)           {analyzePanning(48,osc->fPar[0]); return;}
-    if(!strcmp("/dca/2/pan",osc->address) && osc->iCount>0)           {analyzePanning(49,osc->fPar[0]); return;}
-    if(!strcmp("/dca/3/pan",osc->address) && osc->iCount>0)           {analyzePanning(50,osc->fPar[0]); return;}
-    if(!strcmp("/dca/4/pan",osc->address) && osc->iCount>0)           {analyzePanning(51,osc->fPar[0]); return;}
-    if(!strcmp("/dca/5/pan",osc->address) && osc->iCount>0)           {analyzePanning(52,osc->fPar[0]); return;}
-    if(!strcmp("/dca/6/pan",osc->address) && osc->iCount>0)           {analyzePanning(53,osc->fPar[0]); return;}
-    if(!strcmp("/dca/7/pan",osc->address) && osc->iCount>0)           {analyzePanning(54,osc->fPar[0]); return;}
-    if(!strcmp("/dca/8/pan",osc->address) && osc->iCount>0)           {analyzePanning(55,osc->fPar[0]); return;}
+    if(!strcmp("/dca/1/pan",osc->address) && osc->fCount>0)           {analyzePanning(48,osc->fPar[0]); return;}
+    if(!strcmp("/dca/2/pan",osc->address) && osc->fCount>0)           {analyzePanning(49,osc->fPar[0]); return;}
+    if(!strcmp("/dca/3/pan",osc->address) && osc->fCount>0)           {analyzePanning(50,osc->fPar[0]); return;}
+    if(!strcmp("/dca/4/pan",osc->address) && osc->fCount>0)           {analyzePanning(51,osc->fPar[0]); return;}
+    if(!strcmp("/dca/5/pan",osc->address) && osc->fCount>0)           {analyzePanning(52,osc->fPar[0]); return;}
+    if(!strcmp("/dca/6/pan",osc->address) && osc->fCount>0)           {analyzePanning(53,osc->fPar[0]); return;}
+    if(!strcmp("/dca/7/pan",osc->address) && osc->fCount>0)           {analyzePanning(54,osc->fPar[0]); return;}
+    if(!strcmp("/dca/8/pan",osc->address) && osc->fCount>0)           {analyzePanning(55,osc->fPar[0]); return;}
 
-    if(!strcmp("/bus/01/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(56,osc->fPar[0]); return;}
-    if(!strcmp("/bus/02/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(57,osc->fPar[0]); return;}
-    if(!strcmp("/bus/03/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(58,osc->fPar[0]); return;}
-    if(!strcmp("/bus/04/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(59,osc->fPar[0]); return;}
-    if(!strcmp("/bus/05/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(60,osc->fPar[0]); return;}
-    if(!strcmp("/bus/06/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(61,osc->fPar[0]); return;}
-    if(!strcmp("/bus/07/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(62,osc->fPar[0]); return;}
-    if(!strcmp("/bus/08/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(63,osc->fPar[0]); return;}
-    if(!strcmp("/bus/09/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(64,osc->fPar[0]); return;}
-    if(!strcmp("/bus/10/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(65,osc->fPar[0]); return;}
-    if(!strcmp("/bus/11/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(66,osc->fPar[0]); return;}
-    if(!strcmp("/bus/12/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(67,osc->fPar[0]); return;}
-    if(!strcmp("/bus/13/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(68,osc->fPar[0]); return;}
-    if(!strcmp("/bus/14/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(69,osc->fPar[0]); return;}
-    if(!strcmp("/bus/15/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(70,osc->fPar[0]); return;}
-    if(!strcmp("/bus/16/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(71,osc->fPar[0]); return;}
+    if(!strcmp("/bus/01/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(56,osc->fPar[0]); return;}
+    if(!strcmp("/bus/02/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(57,osc->fPar[0]); return;}
+    if(!strcmp("/bus/03/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(58,osc->fPar[0]); return;}
+    if(!strcmp("/bus/04/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(59,osc->fPar[0]); return;}
+    if(!strcmp("/bus/05/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(60,osc->fPar[0]); return;}
+    if(!strcmp("/bus/06/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(61,osc->fPar[0]); return;}
+    if(!strcmp("/bus/07/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(62,osc->fPar[0]); return;}
+    if(!strcmp("/bus/08/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(63,osc->fPar[0]); return;}
+    if(!strcmp("/bus/09/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(64,osc->fPar[0]); return;}
+    if(!strcmp("/bus/10/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(65,osc->fPar[0]); return;}
+    if(!strcmp("/bus/11/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(66,osc->fPar[0]); return;}
+    if(!strcmp("/bus/12/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(67,osc->fPar[0]); return;}
+    if(!strcmp("/bus/13/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(68,osc->fPar[0]); return;}
+    if(!strcmp("/bus/14/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(69,osc->fPar[0]); return;}
+    if(!strcmp("/bus/15/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(70,osc->fPar[0]); return;}
+    if(!strcmp("/bus/16/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(71,osc->fPar[0]); return;}
 
-    if(!strcmp("/mtx/01/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(72,osc->fPar[0]); return;}
-    if(!strcmp("/mtx/02/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(73,osc->fPar[0]); return;}
-    if(!strcmp("/mtx/03/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(74,osc->fPar[0]); return;}
-    if(!strcmp("/mtx/04/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(75,osc->fPar[0]); return;}
-    if(!strcmp("/mtx/05/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(76,osc->fPar[0]); return;}
-    if(!strcmp("/mtx/06/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(77,osc->fPar[0]); return;}
+    if(!strcmp("/mtx/01/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(72,osc->fPar[0]); return;}
+    if(!strcmp("/mtx/02/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(73,osc->fPar[0]); return;}
+    if(!strcmp("/mtx/03/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(74,osc->fPar[0]); return;}
+    if(!strcmp("/mtx/04/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(75,osc->fPar[0]); return;}
+    if(!strcmp("/mtx/05/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(76,osc->fPar[0]); return;}
+    if(!strcmp("/mtx/06/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(77,osc->fPar[0]); return;}
     //if(!strcmp("not mapped to OSC",osc->address) && osc->fCount>0)    {analyzeFader(78,osc->fPar[0]); return;}
-    if(!strcmp("/main/m/mix/pan",osc->address) && osc->iCount>0)      {analyzePanning(79,osc->fPar[0]); return;}
+    if(!strcmp("/main/m/mix/pan",osc->address) && osc->fCount>0)      {analyzePanning(79,osc->fPar[0]); return;}
 
-    if(!strcmp("/main/st/mix/pan",osc->address) && osc->iCount>0)     {analyzePanning(80,osc->fPar[0]); return;}
+    if(!strcmp("/main/st/mix/pan",osc->address) && osc->fCount>0)     {analyzePanning(80,osc->fPar[0]); return;}
 
+    //gain
+    if(!strcmp("/headamp/000/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp( 0,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/001/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp( 1,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/002/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp( 2,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/003/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp( 3,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/004/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp( 4,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/005/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp( 5,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/006/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp( 6,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/007/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp( 7,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/008/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp( 8,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/009/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp( 9,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/010/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(10,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/011/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(11,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/012/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(12,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/013/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(13,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/014/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(14,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/015/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(15,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/016/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(16,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/017/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(17,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/018/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(18,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/019/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(19,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/020/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(20,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/021/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(21,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/022/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(22,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/023/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(23,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/024/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(24,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/025/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(25,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/026/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(26,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/027/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(27,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/028/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(28,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/029/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(29,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/030/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(30,osc->fPar[0]); return;}
+    if(!strcmp("/headamp/031/gain",osc->address) && osc->fCount>0)       {analyzeHeadamp(31,osc->fPar[0]); return;}
 
     //solo
     if(!strncmp("/-stat/solosw/",osc->address,strlen("/-stat/solosw/")) && osc->iCount>0)
@@ -1178,6 +1292,7 @@ int main(int argc, char *argv[])
 	std::string portName;
     int i;
     int meterPrint=false;
+    bool firstInit=true;
 
 	strcpy(remoteIP, "172.17.100.2");
     memset(signalState,0,sizeof(signalState));
@@ -1208,7 +1323,21 @@ int main(int argc, char *argv[])
             {
                 break;
             }
-            if(*p=='1')
+            else
+            {
+                switch(*p)
+                {
+                case '0': signalState[i].automatic=0; break;
+                case '1': signalState[i].automatic=1; break;
+                case '2': signalState[i].automatic=2; break;
+                case '3': signalState[i].automatic=3; break;
+                case '4': signalState[i].automatic=4; break;
+                case '5': signalState[i].automatic=5; break;
+                case '6': signalState[i].automatic=6; break;
+                case '7': signalState[i].automatic=7; break;
+                }
+            }
+                if(*p=='1')
             {
                 signalState[i].automatic=1;
             }
@@ -1242,7 +1371,13 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
-
+    for (i=0;i<32;i++)
+    {
+        if (signalState[i].automatic&1)
+        {
+            signalState[i].releaseCount=releaseCountDefault;
+        }
+    }
     printf("Setting up network layer. local port:%d remote port:%d remote IP:%s\n",localport,remoteport,remoteIP);
 
     udpSocket = networkInit(localport);
@@ -1265,32 +1400,31 @@ int main(int argc, char *argv[])
 
         if (d%70==0)
         {
-            uint8_t encodeBuffer[2048];
-            OSCSTRUCT osc;
-            size_t sendLen;
+            char buffer[256];
+            sendCommand("/xremote");
 
-            memset(&osc,0,sizeof(OSCSTRUCT));
-            strcpy(osc.address,"/xremote");
-            sendLen=encodeOsc(&osc,encodeBuffer,sizeof(encodeBuffer));
-            if (sendLen>0)
+            SLEEP(100);
+            
+            if(firstInit)
             {
-                networkSend(udpSocket, &address, encodeBuffer, sendLen);
+                for (i=0;i<32;i++)
+                {
+                    sprintf(buffer,"/headamp/%03d/gain",i);
+                    sendCommand(buffer);
+                }
+
+                for (i=0;i<32;i++)
+                {
+                    sprintf(buffer,"/ch/%02d/mix/fader",i+1);
+                    sendCommand(buffer);
+                }
+                firstInit=false;
+                d=60;
             }
-
-#if 1
-            //request meters
-            memset(&osc,0,sizeof(OSCSTRUCT));
-            strcpy(osc.address,"/meters");
-
-            osc.sCount++;
-            strcat(osc.sPar[0],"/meters/1");
-
-            sendLen=encodeOsc(&osc,encodeBuffer,sizeof(encodeBuffer));
-            if (sendLen>0)
+            else
             {
-                networkSend(udpSocket, &address, encodeBuffer, sendLen);
+                sendStringCommand("/meters","/meters/1");
             }
-#endif
         }
         do
         {
@@ -1300,8 +1434,8 @@ int main(int argc, char *argv[])
                 OSCSTRUCT osc;
                 char debugString[4096];
                 decodeOsc(rxBuffer, count, &osc, debugString, sizeof(debugString));
-                if (meterPrint || strncmp("meters",debugString,6))
-                    printf("\t\t%s\n",debugString);
+                //if (meterPrint || strncmp("meters",debugString,6))
+                //    printf("\t\t%s\n",debugString);
 
                 //printOSC(&osc);
                 mapOSC(&osc);
