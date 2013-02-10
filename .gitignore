@@ -1,0 +1,10 @@
+*~
+*.pdf
+*.o
+x32automix
+x32automix.dSYM/
+x32automix.sdf
+x32automix.v11.suo
+x32automix.vcxproj.filters
+x32automix.vcxproj.user
+Debug
