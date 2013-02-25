@@ -58,9 +58,9 @@ static struct sockaddr_in address;
 static int udpSocket;
 
 static int attackCountDefault=1;
-static float attackNoiseLevelDefault=0.001;
+static float attackNoiseLevelDefault=0.001f;
 static int releaseCountDefault=100;
-static float releaseNoiseLevelDefault=0.0001;
+static float releaseNoiseLevelDefault=0.0001f;
 
 typedef struct 
 {
@@ -822,7 +822,7 @@ void analyzeFader(int channel,float f)
 {
     uint16_t val;
 
-    val = f * 0x3fff;
+    val = (uint16_t) (f * 0x3fff);
     //printf("[%02d] Fader %f (%4x)\n",channel, f, val);
     if(f>0.1)
     {
@@ -834,7 +834,7 @@ void analyzePanning(int channel,float f)
 {
     uint16_t val;
 
-    val = f * 0x3fff;
+    val = (uint16_t) (f * 0x3fff);
     //printf("[%02d] Panning %f (%4x)\n",channel, f, val);
 }
 
@@ -872,7 +872,7 @@ void analyzeMeter1(OSCSTRUCT *osc)
                 if (signalState[i].releaseCount<=0)
                 {
                     sprintf(buffer,"/ch/%02d/mix/fader",i+1);
-                    sendFloatCommand(buffer,signalState[i].restoreSignalLevel>0?signalState[i].restoreSignalLevel:.5);
+                    sendFloatCommand(buffer,signalState[i].restoreSignalLevel>0?signalState[i].restoreSignalLevel:.5f);
                 }
                 signalState[i].releaseCount=releaseCountDefault;
             }
@@ -894,7 +894,7 @@ void analyzeMeter1(OSCSTRUCT *osc)
             if(osc->fPar[i]>1.0)
             {
                 sprintf(buffer,"/headamp/%03d/gain",i);
-                signalState[i].gain -= .05;           
+                signalState[i].gain -= .05f;           
                 sendFloatCommand(buffer,signalState[i].gain);
             }
         }
@@ -905,7 +905,7 @@ void analyzeHeadamp(int channel,float f)
 {
     uint16_t val;
 
-    val = f * 0x3fff;
+    val = (uint16_t) (f * 0x3fff);
     //printf("[%02d] Gain %f (%4x)\n",channel, f, val);
     signalState[channel].gain = f;
 }
@@ -1309,11 +1309,11 @@ int main(int argc, char *argv[])
     if (argc > 4)
         attackCountDefault=atoi(argv[4]);
     if (argc > 5)
-        attackNoiseLevelDefault=atof(argv[5]);
+        attackNoiseLevelDefault=(float) atof(argv[5]);
     if (argc > 6)
         releaseCountDefault=atoi(argv[6]);
     if (argc > 7)
-        releaseNoiseLevelDefault=atof(argv[7]);
+        releaseNoiseLevelDefault=(float) atof(argv[7]);
     if (argc > 8)
     {
         char *p=argv[8];
